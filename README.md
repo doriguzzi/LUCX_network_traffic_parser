@@ -1,0 +1,278 @@
+# LUCX: LUCID network traffic parser eXtended
+
+LUCX (LUCID network traffic parser eXtended) is a network traffic parser that works with both pre-recorded traffic  traces in ```pcap``` format and live network traffic captured from a Network Interface. LUCX is an extended version of the LUCID dataset parser (https://github.com/doriguzzi/lucid-ddos). Like the original version, LUCX produces traffic observations consistent with those collected in existing online systems, where the detection algorithms must cope with segments of traffic flows collected over pre-defined time windows. 
+Furthermore, LUCX extracts more features (e.g., TLS-specific features) in two different formats: **Packet-Level** and **Statistical**, described below in this README.
+
+The traffic pre-processing operations are divided into two different stages: the first extracts the features from the packets and organises them into flows and time windows, the second performs feature normalisation, padding (or flattening, depending on the desired output format) and saves training, validation and test sets in ```hdf5``` format.
+
+
+
+## Installation
+
+LUCX is implemented in Python v3.X, Numpy and Pyshark. LUCX requires the installation of a number of Python tools and libraries. This can be done by using the ```conda``` software environment (https://docs.conda.io/projects/conda/en/latest/).
+We suggest the installation of ```miniconda```, a light version of ```conda```. ```miniconda``` is available for MS Windows, MacOSX and Linux and can be installed by following the guidelines available at https://docs.conda.io/en/latest/miniconda.html#. 
+
+MS Windows 10 version 2004 and higher (Build 19041 and higher) or Windows 11 are required.
+In MS Windows, first install the Windows subsystem for Linux from the command line: ```wsl.exe —install``` (see [here](https://learn.microsoft.com/en-us/windows/wsl/install) for more info). This command will install an Ubuntu Linux OS on your computer. You can access the Linux command line by executing the **WSL** app from the Windows menu, then follow the guidelines for the Linux OS below.
+
+Open a terminal, execute one of the following commands (based on your operating system) and follow the on-screen instructions:
+
+```
+bash Miniconda3-latest-Linux-x86_64.sh (on Linux operating systems)
+bash Miniconda3-latest-MacOSX-x86_64.sh (on macOS)
+```
+
+Then create a new ```conda``` environment (called ```python313```) based on Python 3.13.5:
+
+```
+conda create -n python313 python=3.13.5
+```
+
+Activate the new ```python313``` environment:
+
+```
+conda activate python313
+```
+
+And configure the environment with the installation of a few more packages:
+
+```
+(python39)$ pip install scikit-learn h5py pyshark matplotlib graphviz pandas scikeras pydot seaborn
+```
+
+Pyshark is used for data pre-processing. It is just Python wrapper for tshark, meaning that ```tshark``` must be also installed. On an Ubuntu-based OS, use the following command:
+
+```
+sudo apt install tshark
+```
+
+In macOS, just download ```Wireshark``` from [here](https://www.wireshark.org/download.html) and install it.
+
+Please note that the current parser code works with ```wireshark```/```tshark``` **version 4.4.9**.
+
+## Traffic feature representations
+LUCX considers bidirectional network traffic flows, defined as groups of packets that share the same 5‑tuple identifier or its transposed 5‑tuple. The 5‑tuple is a common way to uniquely characterise a communication stream in IP networks, and it consists of:
+- Source IP address
+- Destination IP address
+- Source port number
+- Destination port number
+- Transport protocol (e.g., TCP, UDP)
+
+When packets have identical values for these five fields, they are considered part of the same flow. The concept of a transposed 5‑tuple accounts for bidirectional communication: if the source and destination addresses/ports are swapped but the protocol remains the same, the packets are still considered part of the same flow. This ensures that both directions of a conversation (client → server and server → client) are grouped together.
+
+**Example**: 
+Suppose a client at IP 192.168.1.10 sends a TCP request to a web server at IP 203.0.113.5 on port 80. The client uses source port 54321.
+- Forward direction (client → server):
+	- Source IP: 192.168.1.10
+	- Destination IP: 203.0.113.5
+	- Source port: 54321
+	- Destination port: 80
+	- Protocol: TCP
+- Reverse direction (server → client):
+	- Source IP: 203.0.113.5
+	- Destination IP: 192.168.1.10
+	- Source port: 80
+	- Destination port: 54321
+	- Protocol: TCP
+
+Both sets of packets belong to the same traffic flow because the reverse direction matches the transposed 5‑tuple of the forward direction.
+In addition, LUCX splits each traffic flow extracted from network traffic traces of a dataset (or the incoming network traffic) into sub‑flows based on time windows. This segmentation simulates real‑world scenarios in which traffic is collected within static or dynamic time‑windows and then forwarded to a classifier for analysis. By doing so, the system mirrors the operational practices of intrusion detection systems (IDS), which often rely on time‑bounded packet aggregation to identify short‑term behaviors and detect attacks.
+
+After the packets are grouped into flows and the flows are further split into sub‑flows, LUCX converts the sub‑flows into samples that can be used to train, validate, and test ML‑based classifiers. There are two possible output formats: arrays (as in LUCID) or vectors. The first format preserves the features extracted directly from packets, while the second produces statistical representations of the packet‑level features.
+These two operational modes are referred to as **packet‑level** features and **statistical** features, respectively.
+
+### Packet-level features
+This follows the same format as the original LUCID dataset parser, which converts a sub‑flow into an array where each column represents a packet‑level feature (e.g., timestamp, packet length, TCP SYN flag, ICMP type), and each row corresponds to a packet in chronological order. Although the structure remains the same, the number of columns has been increased by introducing additional features or by expanding existing features into binary representations (e.g., IP and TCP flags).
+The first row contains the first packet of a sub‑flow, which is also the first packet of a flow collected within a time window. The first column is the packet timestamp: for the first packet, the timestamp is set to zero, while the timestamps of subsequent packets are expressed as the difference between their arrival time and the original timestamp of the first packet. This approach avoids using absolute values for packet arrival times and preserves the relative timing patterns of packets belonging to the same sub‑flow.
+
+| timestamp | packet_length | IP_ttl | IP_flags_df | ... | ICMP_code |
+|-----------|---------------|--------|-------------|-----|-----------|
+| 0         | 64            | 128    | 0           | ... | 0         |
+| 1.2       | 128           | 64     | 1           | ... | 8         |
+| ...       | ...           | ...    | ...         | ... | ...       |
+| 0         | 0             | 0      | 0           | ... | 0         |
+| 0         | 0             | 0      | 0           | ... | 0         |
+
+
+For each sample the current number of features is 78, including TLS-specific features such as record versions, handshake extensions and types, etc. The full list of features is available in the [Appendix](#appendix:-traffic-flow-features) at the end of this README.
+Like in LUCID, LUCX collects a configurable pre-defined number of packets for each sub-flow. This number can be configured through the command-line option ```--packets_per_flow ``` described below. Packets exceeding this number are discarded, while sub-flows with a number of packets smaller than ```--packets_per_flow ``` are zero-padded, like shown in the example above.
+### Statistical features
+The statistical version of the features consists of a vector representation of traffic sub‑flows, where each sub‑flow is represented as a vector of statistical features collected within a time window. For example, the first feature is the average inter‑arrival time between packets of the same sub‑flow, while the second feature is the average packet length, and so on.
+
+| IAT (mean) | packet_length (mean) | IP_ttl (mean)| IP_flags_df (count)| ... | ICMP_code (mean)| Nr. of Packets |
+|-----------|---------------|--------|-------------|-----|-----------|-----|
+| 0.01         | 130            | 102.5    | 2           | ... | 3         | 5   |
+
+The number of elements in the vector is equal to the number of columns in the array of the packet‑level representation, plus one additional feature appended at the end of the vector: the number of packets in the sub‑flow. In the packet‑level representation, this is an implicit feature that can be derived from the number of non‑padded rows in the array. The full list of features is available in the [Appendix](#appendix:-traffic-flow-features) at the end of this README.
+
+In this representation, the option ```--packets_per_flow``` specifies how many packets to collect for each sub‑flow within a time window when computing the statistics.
+
+## Traffic pre-processing
+LUCX currently supports three DDoS datasets from the University of New Brunswick (UNB) (https://www.unb.ca/cic/datasets/index.html): CIC-IDS2017, CSE-CIC-IDS2018 and CIC-DDoS2019. A portion of the latter will be used for this guide and included in the ```sample-dataset``` folder.
+
+With term *support*, we mean the capability of the script to correctly label the packets and the traffic flows either as benign or DDoS. In general, this is done by parsing a file with the labels provided with the traffic traces, like in the case of the UNB datasets, or by manually indicating the IP address(es) of the attacker(s) and the IP address(es) of the victim(s) in the code. Of course, also in the latter case, the script must be tuned with the correct information of the traffic (all the attacker/victim pairs of IP addresses), as this information is very specific to the dataset and to the methodology used to generate the traffic. 
+
+Said that, ```lucx_network_traffic_parser.py``` includes the structures with the pairs attacker/victim of the three datasets mentioned above (CIC-IDS2017, CSE-CIC-IDS2018 and CIC-DDoS2019), but it can be easily extended to support other datasets by replicating the available code.
+
+For instance, the following Python dictionary provides the IP addresses of the attackers and the victims involved in the CIC-DDoS2019 dataset:   
+
+```
+DOS2019_FLOWS = {'attackers': ['172.16.0.5'], 'victims': ['192.168.50.1', '192.168.50.4']}
+```
+Please note that in the CIC-DDoS2019 dataset, the source IP addresses of DDoS packets have been replaced with the IP address of the router that connects the attack network and the victim network within the testbed ([CIC-DDoS2019](https://www.unb.ca/cic/datasets/ddos-2019.html)).
+
+### Command options
+
+The following parameters can be specified when using ```lucx_network_traffic_parser.py```:
+
+- ```-d```, ```--dataset_folder```: Folder with the dataset
+- ```-f```, ```--traffic_type ```: Type of flow to process (all, benign, ddos)
+- ```-i```, ```--dataset_id ```: String to append to the names of output files
+- ```-m```, ```--max_flows ```: Max number of flows to extract from the pcap files
+- ```-n```, ```--packets_per_flow ```: Maximum number of packets in a sample (default: 10 packets)
+- ```-o```, ```--output_folder ```: Folder where the scripts save the output. The dataset folder is used when this option is not used
+- ```-p```, ```--preprocess_folder ```: Folder containing the intermediate files ```*.data```
+- ```-s```, ```--samples ```: Number of training samples in the reduced output
+- ```-t```, ```--dataset_type ```: Type of the dataset. Available options are: DOS2017, DOS2018, DOS2019
+- ```-w```, ```--time_window ```: Length of the time window in seconds (default: 10 seconds)
+- ```--preprocess_file ```: Path to an intermediate file ```*.data```
+- ```--dont_normalize ```: Skip feature normalisation (default: False)
+- ```--flatten ```: Flatten the array-like intermediate flow representations into vectors (default: False)
+
+
+
+### First step
+
+In the first step, LUCX extracts the features from the packets of all the ```pcap``` files contained in the source directory. The features are grouped in flows and labelled according to the value of parameter ```dataset_type```. Specifically, a flow is a set of features from packets with the same source IP, source UDP/TCP port, destination IP and destination UDP/TCP port and protocol. Flows are bi-directional, therefore, packet (srcIP,srcPort,dstIP,dstPort,proto) belongs to the same flow of (dstIP,dstPort,srcIP,srcPort,proto). The result is a set of intermediate binary files with extension ```.data```.
+
+This first step can be executed with command:
+
+```
+python3 lucx_network_traffic_parser.py --dataset_type DOS2019 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --dataset_id DOS2019 --traffic_type all --time_window 10
+```
+
+This will process in parallel the two files, producing a file named ```10t-10n-DOS2019-preprocess.data```. In general, the script loads all the files with extension ```.pcap``` contained in the folder indicated with option ```--dataset_folder```. The files are processed in parallel to minimise the execution time.
+
+Prefix ```10t-10n``` means that the pre-processing has been done using a time window of 10 seconds (10t) and a flow length of 10 packets (10n). Please note that ```DOS2019``` in the filename is the result of option ```--dataset_id DOS2019``` in the command.
+
+### Second step
+
+The second step loads the ```*.data``` files, merges them into a single data structure stored in RAM memory, balances the dataset so that number of benign and DDoS samples are approximately the same, splits the data structure into training, validation and test sets, normalises the features between 0 and 1 and executes the padding of samples with zeros so that they all have the same shape (since having samples of fixed shape is a requirement for a CNN to be able to learn over a full sample set).
+
+Finally, three files (training, validation and test sets) are saved in *hierarchical data format* ```hdf5``` . 
+
+The second step is executed with command:
+
+```
+python3 lucx_network_traffic_parser.py --preprocess_folder ./sample-dataset/
+```
+
+If option ```--output_folder``` is not used, the output will be produced in the input folder specified with option ```--preprocess_folder```.
+
+At the end of this operation, the script prints a summary of the pre-processed dataset. In our case, with this tiny traffic traces, the result should be something like:
+
+```
+2023-05-19 15:37:17 | examples (tot,ben,ddos):(7486,3743,3743) | Train/Val/Test sizes: (6060,677,749) | Packets (train,val,test):(24850,2763,3285) | options:--preprocess_folder ./sample-dataset/ |
+```
+
+Which means 7486 samples in total (3743 benign and 3743 DDoS), 6060 in the training set, 677 in the validation set and 749 in the test set. The output also shows the total number of packets in the dataset divided in training, validation and test sets and the options used with the script. 
+
+All the output of the ```lucx_network_traffic_parser.py``` script is saved within the output folder in the ```history.log``` file.
+ 
+## Acknowledgements
+
+If you are using LUCX's code for scientific research, please cite the related paper in your manuscript as follows:
+
+*R. Doriguzzi-Corin, S. Millar, S. Scott-Hayward, J. Martínez-del-Rincón and D. Siracusa, "Lucid: A Practical, Lightweight Deep Learning Solution for DDoS Attack Detection," in IEEE Transactions on Network and Service Management, vol. 17, no. 2, pp. 876-889, June 2020, doi: 10.1109/TNSM.2020.2971776.*
+
+## License
+
+The code is released under the Apache License, Version 2.0.
+
+## Appendix: traffic flow features
+The following table presents the complete set of features extracted by LUCX, with a brief description of each feature in both packet-level and statistical representations.
+The term "Indicator" for packet‑level features refers to a value of 0 or 1 that specifies whether a categorical feature is present in the packet.
+The term "Count" for statistical features refers to the number of packets in which a given categorical feature was observed.
+
+
+| # | Feature | Packet-level features | Statistical features |
+|---|---------|-----------------------|----------------------|
+| 0 | `timestamp` | Normalized packet timestamp (0 for the first packet) | Average IAT |
+| 1 | `packet_length` | Packet size in bytes | Average packet size in bytes |
+| 2 | `IP_ttl` | IPv4 Time-To-Live value | Average IPv4 Time-To-Live value |
+| 3 | `IP_flags_df` | Indicator of “Don't Fragment” flag | “Don't Fragment” flag occurrence count |
+| 4 | `IP_flags_mf` | Indicator of “More Fragments” flag | “More Fragments” flag occurrence count |
+| 5 | `IP_flags_rb` | Indicator of “Reserved Bit” flag | “Reserved Bit” flag occurrence count |
+| 6 | `IP_frag_off` | IP fragmentation offset | IP fragmentation offset |
+| 7 | `protocols_arp` | Indicator for ARP protocol packets | Count for ARP protocol packets |
+| 8 | `protocols_data` | Indicator for data-type packets without higher-layer parsing | Count for data-type packets without higher-layer parsing |
+| 9 | `protocols_dns` | Indicator for DNS packets | Count for DNS packets |
+| 10 | `protocols_ftp` | Indicator for FTP packets | Count for FTP packets |
+| 11 | `protocols_http` | Indicator for HTTP packets | Count for HTTP packets |
+| 12 | `protocols_icmp` | Indicator for ICMP packets | Count for ICMP packets |
+| 13 | `protocols_ip` | Indicator for generic IP packets | Count for generic IP packets |
+| 14 | `protocols_ssdp` | Indicator for SSDP service discovery packets | Count for SSDP service discovery packets |
+| 15 | `protocols_ssl` | Indicator for SSL/TLS packets | Count for SSL/TLS packets |
+| 16 | `protocols_telnet` | Indicator for Telnet protocol packets | Count for Telnet protocol packets |
+| 17 | `protocols_tcp` | Indicator for TCP packets | Count for TCP packets |
+| 18 | `protocols_udp` | Indicator for UDP packets | Count for UDP packets |
+| 19 | `TCP_length` | TCP segment length | TCP segment length |
+| 20 | `TCP_flags_ack` | ACK flag indicator | ACK flag count |
+| 21 | `TCP_flags_cwr` | CWR flag indicator | CWR flag count |
+| 22 | `TCP_flags_ece` | ECE flag indicator | ECE flag count |
+| 23 | `TCP_flags_fin` | FIN flag indicator | FIN flag count |
+| 24 | `TCP_flags_push` | PSH flag indicator | PSH flag count |
+| 25 | `TCP_flags_reset` | RST flag indicator | RST flag count |
+| 26 | `TCP_flags_syn` | SYN flag indicator | SYN flag count |
+| 27 | `TCP_flags_urg` | URG flag indicator | URG flag count |
+| 28 | `TCP_window_size` | TCP advertised window size | Average TCP advertised window size |
+| 29 | `tls_record_versions_0x0300` | Indicator for TLS record version SSL 3.0 | Count for TLS record version SSL 3.0 |
+| 30 | `tls_record_versions_0x0301` | Indicator for TLS record version 1.0 | Count for TLS record version 1.0 |
+| 31 | `tls_record_versions_0x0302` | Indicator for TLS record version 1.1 | Count for TLS record version 1.1 |
+| 32 | `tls_record_versions_0x0303` | Indicator for TLS record version 1.2 | Count for TLS record version 1.2 |
+| 33 | `tls_record_versions_0x0304` | Indicator for TLS record version 1.3 | Count for TLS record version 1.3 |
+| 34 | `tls_handshake_extensions_supported_version_0x0300` | Indicator for Supported version ext: SSL 3.0 | Count for Supported version ext: SSL 3.0 |
+| 35 | `tls_handshake_extensions_supported_version_0x0301` | Indicator for Supported version ext: TLS 1.0 | Count for Supported version ext: TLS 1.0 |
+| 36 | `tls_handshake_extensions_supported_version_0x0302` | Indicator for Supported version ext: TLS 1.1 | Count for Supported version ext: TLS 1.1 |
+| 37 | `tls_handshake_extensions_supported_version_0x0303` | Indicator for Supported version ext: TLS 1.2 | Count for Supported version ext: TLS 1.2 |
+| 38 | `tls_handshake_extensions_supported_version_0x0304` | Indicator for Supported version ext: TLS 1.3 | Count for Supported version ext: TLS 1.3 |
+| 39 | `tls_handshake_types_0x00` | Indicator for TLS ClientHello | Count for TLS ClientHello |
+| 40 | `tls_handshake_types_0x01` | Indicator for TLS ServerHello | Count for TLS ServerHello |
+| 41 | `tls_handshake_types_0x02` | Indicator for TLS HelloVerifyRequest | Count for TLS HelloVerifyRequest |
+| 42 | `tls_handshake_types_0x0b` | Indicator for TLS Certificate | Count for TLS Certificate |
+| 43 | `tls_handshake_types_0x0c` | Indicator for TLS ServerKeyExchange | Count for TLS ServerKeyExchange |
+| 44 | `tls_handshake_types_0x0d` | Indicator for TLS CertificateRequest | Count for TLS CertificateRequest |
+| 45 | `tls_handshake_types_0x0e` | Indicator for TLS ServerHelloDone | Count for TLS ServerHelloDone |
+| 46 | `tls_handshake_types_0x0f` | Indicator for TLS CertificateVerify | Count for TLS CertificateVerify |
+| 47 | `tls_handshake_types_0x10` | Indicator for TLS ClientKeyExchange | Count for TLS ClientKeyExchange |
+| 48 | `tls_handshake_types_0x14` | Indicator for TLS Finished | Count for TLS Finished |
+| 49 | `tls_handshake_types_0x15` | Indicator for TLS CertificateUrl | Count for TLS CertificateUrl |
+| 50 | `tls_handshake_types_0x16` | Indicator for TLS CertificateStatus | Count for TLS CertificateStatus |
+| 51 | `tls_handshake_types_0x17` | Indicator for TLS SupplementalData | Count for TLS SupplementalData |
+| 52 | `tls_handshake_types_0x18` | Indicator for TLS KeyUpdate (1.3) | Count for TLS KeyUpdate (1.3) |
+| 53 | `tls_handshake_types_0x19` | Indicator for TLS MessageHash (1.3) | Count for TLS MessageHash (1.3) |
+| 54 | `tls_handshake_types_0x1a` | Indicator for TLS EndOfEarlyData (1.3) | Count for TLS EndOfEarlyData (1.3) |
+| 55 | `tls_handshake_types_0xfe` | Indicator for GREASE handshake value | Count for GREASE handshake value |
+| 56 | `tls_handshake_ciphersuites_0xC02F` | Indicator for TLS_ECDHE_RSA_AES_128_GCM_SHA256 | Count for TLS_ECDHE_RSA_AES_128_GCM_SHA256 |
+| 57 | `tls_handshake_ciphersuites_0xC02B` | Indicator for TLS_ECDHE_ECDSA_AES_128_GCM_SHA256 | Count for TLS_ECDHE_ECDSA_AES_128_GCM_SHA256 |
+| 58 | `tls_handshake_ciphersuites_0xC030` | Indicator for TLS_ECDHE_RSA_AES_256_GCM_SHA384 | Count for TLS_ECDHE_RSA_AES_256_GCM_SHA384 |
+| 59 | `tls_handshake_ciphersuites_0xC02C` | Indicator for TLS_ECDHE_ECDSA_AES_256_GCM_SHA384 | Count for TLS_ECDHE_ECDSA_AES_256_GCM_SHA384 |
+| 60 | `tls_handshake_ciphersuites_0x1301` | Indicator for TLS_AES_128_GCM_SHA256 | Count for TLS_AES_128_GCM_SHA256 |
+| 61 | `tls_handshake_ciphersuites_0x1302` | Indicator for TLS_AES_256_GCM_SHA384 | Count for TLS_AES_256_GCM_SHA384 |
+| 62 | `tls_handshake_ciphersuites_0x1303` | Indicator for TLS_CHACHA20_POLY1305_SHA256 | Count for TLS_CHACHA20_POLY1305_SHA256 |
+| 63 | `tls_handshake_ciphersuites_0x1304` | Indicator for TLS_AES_128_CCM_SHA256 | Count for TLS_AES_128_CCM_SHA256 |
+| 64 | `tls_handshake_ciphersuites_0x1305` | Indicator for TLS_AES_128_CCM_8_SHA256 | Count for TLS_AES_128_CCM_8_SHA256 |
+| 65 | `tls_handshake_ciphersuites_0x002F` | Indicator for TLS_RSA_AES_128_CBC_SHA | Count for TLS_RSA_AES_128_CBC_SHA |
+| 66 | `tls_handshake_ciphersuites_0x0035` | Indicator for TLS_RSA_AES_256_CBC_SHA | Count for TLS_RSA_AES_256_CBC_SHA |
+| 67 | `tls_handshake_ciphersuites_0x009C` | Indicator for TLS_RSA_AES_128_GCM_SHA256 | Count for TLS_RSA_AES_128_GCM_SHA256 |
+| 68 | `tls_handshake_ciphersuites_0x0000` | Indicator for Empty/illegal ciphersuite value | Count for Empty/illegal ciphersuite value |
+| 69 | `tls_record_content_type_0x14` | Indicator for ChangeCipherSpec record | Count for ChangeCipherSpec record |
+| 70 | `tls_record_content_type_0x15` | Indicator for Alert record | Count for Alert record |
+| 71 | `tls_record_content_type_0x16` | Indicator for Handshake record | Count for Handshake record |
+| 72 | `tls_record_content_type_0x17` | Indicator for Application Data record | Count for Application Data record |
+| 73 | `tls_record_content_type_0x18` | Indicator for Heartbeat record | Count for Heartbeat record |
+| 74 | `TLS_record_length` | TLS record payload length | Average TLS record payload length |
+| 75 | `UDP_length` | UDP datagram length | Average UDP datagram length |
+| 76 | `ICMP_type` | ICMP message type | Average ICMP message type |
+| 77 | `ICMP_code` | ICMP subtype/code | Average ICMP subtype/code |
+| 78 | `Packets` | N/A | Total number of packets in the flow |
