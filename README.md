@@ -48,7 +48,7 @@ sudo apt install tshark
 
 In macOS, just download ```Wireshark``` from [here](https://www.wireshark.org/download.html) and install it.
 
-Please note that the current parser code works with ```wireshark```/```tshark``` **version 4.4.9**.
+Please note that the current parser code works with ```wireshark```/```tshark``` **version 4.4.9** or above.
 
 ## Traffic feature representations
 LUCX considers bidirectional network traffic flows, defined as groups of packets that share the same 5‑tuple identifier or its transposed 5‑tuple. The 5‑tuple is a common way to uniquely characterise a communication stream in IP networks, and it consists of:
