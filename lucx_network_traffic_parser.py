@@ -149,7 +149,7 @@ def pyshark_packet_features(pkt,encoding_lookup,tls_fields_count):
             pf.features_list.append(int(pkt.icmp.type))  # ICMP type
             pf.features_list.append(int(pkt.icmp.code))  # ICMP code
         else:
-            pf.features_list = pf.features_list + [0]*len(tls_record_versions) + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # padding for layer3-only packets (TCP+UDP+ICMP positions)
+            pf.features_list = pf.features_list + [0]*tls_fields_count + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # padding for layer3-only packets (TCP+UDP+ICMP positions)
             tmp_id[4] = 0
     
         pf.id_fwd = (tmp_id[0], tmp_id[1], tmp_id[2], tmp_id[3], tmp_id[4])
