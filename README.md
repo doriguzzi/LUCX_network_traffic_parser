@@ -138,6 +138,7 @@ The following parameters can be specified when using ```lucx_network_traffic_par
 - ```--preprocess_file ```: Path to an intermediate file ```*.data```
 - ```--dont_normalize ```: Skip feature normalisation (default: False)
 - ```--flatten ```: Flatten the array-like intermediate flow representations into vectors (default: False)
+- ```--enable_tls ```: Enables the extraction of TLS-specific features (default: False)
 
 
 
@@ -178,7 +179,14 @@ At the end of this operation, the script prints a summary of the pre-processed d
 Which means 7486 samples in total (3743 benign and 3743 DDoS), 6060 in the training set, 677 in the validation set and 749 in the test set. The output also shows the total number of packets in the dataset divided in training, validation and test sets and the options used with the script. 
 
 All the output of the ```lucx_network_traffic_parser.py``` script is saved within the output folder in the ```history.log``` file.
- 
+
+## Notes
+The option `--enable_tls` enables the extraction of additional features: five TLS-specific categorical features and one numeric feature (`TLS_record_length`).  
+In the first step, the categorical features are converted into 44 numerical features using the *Bag of Words* technique. This process requires more resources for both extraction and storage, resulting in longer processing times.
+
+Therefore, `--enable_tls` is set to `False` by default.  
+To extract the TLS features, the option `--enable_tls` must be enabled in both steps. This ensures that the features are extracted during the first step and correctly normalised and flattened in the second step.
+
 ## Acknowledgements
 
 If you are using LUCX's code for scientific research, please cite the related paper in your manuscript as follows:

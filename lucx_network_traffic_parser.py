@@ -119,24 +119,25 @@ def pyshark_packet_features(pkt,encoding_lookup,tls_fields_count):
                 pf.features_list.append(flag_to_int(pkt.tcp.flags_urg))
                 pf.features_list.append(int(pkt.tcp.window_size_value))  # TCP window size  
                 
-                try:
-                    # TLS layer is available if packet contains TLS
-                    tls_layer = pkt.tls
-                    tls_record_versions =sentence_to_encoding(getattr(tls_layer, 'record_version', '0x0'), encoding_lookup['tls_record_versions'])
-                    pf.features_list = pf.features_list + list(tls_record_versions)
-                    tls_handshake_extensions_supported_version =sentence_to_encoding(getattr(tls_layer, 'tls_handshake_extensions_supported_version', '0x0'), encoding_lookup['tls_handshake_extensions_supported_version'])
-                    pf.features_list = pf.features_list + list(tls_handshake_extensions_supported_version)
-                    tls_handshake_type =sentence_to_encoding(getattr(tls_layer, 'tls_handshake_type', '0x0'), encoding_lookup['tls_handshake_types'])
-                    pf.features_list = pf.features_list + list(tls_handshake_type)
-                    handshake_ciphersuite =sentence_to_encoding(getattr(tls_layer, 'handshake_ciphersuite', '0x0'), encoding_lookup['tls_handshake_ciphersuites'])
-                    pf.features_list = pf.features_list + list(handshake_ciphersuite)
-                    tls_record_content_type =sentence_to_encoding(getattr(tls_layer, 'record_content_type', '0x0'), encoding_lookup['tls_record_content_type'])
-                    pf.features_list = pf.features_list + list(tls_record_content_type)
+                if tls_fields_count > 0:
+                    try:
+                        # TLS layer is available if packet contains TLS
+                        tls_layer = pkt.tls
+                        tls_record_versions =sentence_to_encoding(getattr(tls_layer, 'record_version', '0x0'), encoding_lookup['tls_record_versions'])
+                        pf.features_list = pf.features_list + list(tls_record_versions)
+                        tls_handshake_extensions_supported_version =sentence_to_encoding(getattr(tls_layer, 'tls_handshake_extensions_supported_version', '0x0'), encoding_lookup['tls_handshake_extensions_supported_version'])
+                        pf.features_list = pf.features_list + list(tls_handshake_extensions_supported_version)
+                        tls_handshake_type =sentence_to_encoding(getattr(tls_layer, 'tls_handshake_type', '0x0'), encoding_lookup['tls_handshake_types'])
+                        pf.features_list = pf.features_list + list(tls_handshake_type)
+                        handshake_ciphersuite =sentence_to_encoding(getattr(tls_layer, 'handshake_ciphersuite', '0x0'), encoding_lookup['tls_handshake_ciphersuites'])
+                        pf.features_list = pf.features_list + list(handshake_ciphersuite)
+                        tls_record_content_type =sentence_to_encoding(getattr(tls_layer, 'record_content_type', '0x0'), encoding_lookup['tls_record_content_type'])
+                        pf.features_list = pf.features_list + list(tls_record_content_type)
 
-                    pf.features_list.append(int(getattr(tls_layer, 'record_length', 0)))  # TLS record length in bytes
-                    #print ("TLS packet found:" , pf.features_list[29:])
-                except AttributeError:
-                    pf.features_list = pf.features_list + [0]*tls_fields_count  # TLS fields not present
+                        pf.features_list.append(int(getattr(tls_layer, 'record_length', 0)))  # TLS record length in bytes
+                        #print ("TLS packet found:" , pf.features_list[29:])
+                    except AttributeError:
+                        pf.features_list = pf.features_list + [0]*tls_fields_count  # TLS fields not present
                 pf.features_list = pf.features_list + [0, 0, 0]  # UDP + ICMP positions
             elif protocol == socket.IPPROTO_UDP:
                 pf.features_list = pf.features_list + [0]*tls_fields_count + [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # TCP positions
@@ -239,7 +240,7 @@ def parse_packet(pkt,encoding_lookup, tls_fields_count, parser='pyshark'):
     return pyshark_packet_features(pkt,encoding_lookup,tls_fields_count)
 
 # Offline preprocessing of pcap files for model training, validation and testing
-def process_pcap(pcap_file,bin_labels,mc_labels, max_flow_len,labelled_flows,max_flows=0, traffic_type='all',time_window=TIME_WINDOW, parser='pyshark'):
+def process_pcap(pcap_file,bin_labels,mc_labels, max_flow_len,labelled_flows,max_flows=0, tls_features = False, traffic_type='all',time_window=TIME_WINDOW, parser='pyshark'):
     start_time = time.time()
     temp_dict = OrderedDict()
     start_time_window = -1
@@ -254,7 +255,10 @@ def process_pcap(pcap_file,bin_labels,mc_labels, max_flow_len,labelled_flows,max
     encoding_lookup = protocol_lookup | tls_lookup
 
     # Precompute TLS fields count
-    tls_fields_count =  sum(len(v) for v in tls_categorical_features.values()) + 1  # +1 for record length
+    if tls_features == False:   
+        tls_fields_count = 0    
+    else:   
+        tls_fields_count =  sum(len(v) for v in tls_categorical_features.values()) + 1  # +1 for record length
 
     if parser == 'pyshark':
         packets = pyshark.FileCapture(pcap_file)
@@ -487,6 +491,7 @@ def main(argv):
                         help='Pcap parser (scapy, pyshark)')
     
     parser.add_argument('--no_split', help='Do not split the dataset', action='store_true')
+    parser.add_argument('--enable_tls', help='Extract TLS features', action='store_true')
 
     args = parser.parse_args()
     time_window = args.time_window
@@ -512,7 +517,7 @@ def main(argv):
         for file in filelist:
             try:
                 flows = manager.list()
-                p = Process(target=process_pcap,args=(file,in_labels,mc_labels, max_flow_len,flows,args.max_flows, traffic_type,time_window,parser))
+                p = Process(target=process_pcap,args=(file,in_labels,mc_labels, max_flow_len,flows,args.max_flows, args.enable_tls, traffic_type,time_window,parser))
                 process_list.append(p)
                 flows_list.append(flows)
             except FileNotFoundError as e:
@@ -637,12 +642,14 @@ def main(argv):
 
         # obtain 1D samples
         if args.flatten == True:
-            X_train = flatten_samples(X_train)
-            X_val = flatten_samples(X_val)
-            X_test = flatten_samples(X_test)
+            X_train = flatten_samples(X_train,args.enable_tls)
+            X_val = flatten_samples(X_val,args.enable_tls)
+            X_test = flatten_samples(X_test,args.enable_tls)
 
-        mins,maxs = static_min_max(args.flatten,time_window=time_window,max_flow_len=max_flow_len) # static mins and maxs
-        #mins,maxs = find_min_max(X_full) # mins and maxs computed from the dataset
+        X_full = X_train + X_val + X_test
+
+        #mins,maxs = static_min_max(args.flatten,time_window=time_window,max_flow_len=max_flow_len, enable_tls=args.enable_tls) # static mins and maxs
+        mins,maxs = find_min_max(X_full) # mins and maxs computed from the dataset
 
         output_file = output_folder + '/' + str(time_window) + 't-' + str(max_flow_len) + 'n-' + dataset_id + '-dataset'
         

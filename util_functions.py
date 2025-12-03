@@ -42,7 +42,7 @@ tls_record_content_type = ['0x14','0x15','0x16','0x17','0x18']
 )
 
 
-def get_feature_list_flatten(time_window=10,max_flow_len=10):
+def get_feature_list_flatten(time_window=10,max_flow_len=10,enable_tls=False):
     # feature list with min and max values
     feature_list = OrderedDict([
         ('timestamp', [0,time_window]),
@@ -65,11 +65,13 @@ def get_feature_list_flatten(time_window=10,max_flow_len=10):
         ('TCP_flags_syn',[0,max_flow_len]),
         ('TCP_flags_urg',[0,max_flow_len]),
         ('TCP_window_size',[0,1<<16])])
-    for feature_type in tls_categorical_features.keys():
-        for cat in tls_categorical_features[feature_type]:
-            feature_list[feature_type + "_" + str(cat)] = [0,max_flow_len]
+    if enable_tls:
+        for feature_type in tls_categorical_features.keys():
+            for cat in tls_categorical_features[feature_type]:
+                feature_list[feature_type + "_" + str(cat)] = [0,max_flow_len]
+        feature_list.update([
+            ('TLS_record_length',[0,1<<14])]) # max TLS record length is 2^14 = 16384
     feature_list.update([
-        ('TLS_record_length',[0,1<<14]), # max TLS record length is 2^14 = 16384
         ('UDP_length',[0,1<<16]),
         ('ICMP_type',[0,1<<8]),
         ('ICMP_code',[0,1<<8]),
@@ -77,7 +79,7 @@ def get_feature_list_flatten(time_window=10,max_flow_len=10):
     )
     return feature_list
 
-def get_feature_list_array(time_window=10,max_flow_len=10):
+def get_feature_list_array(time_window=10,max_flow_len=10,enable_tls=False):
     # feature list with min and max values
     feature_list = OrderedDict([
         ('timestamp', [0,time_window]),
@@ -100,22 +102,24 @@ def get_feature_list_array(time_window=10,max_flow_len=10):
         ('TCP_flags_syn',[0,1]),
         ('TCP_flags_urg',[0,1]),
         ('TCP_window_size',[0,1<<16])])
-    for feature_type in tls_categorical_features.keys():
-        for cat in tls_categorical_features[feature_type]:
-            feature_list[feature_type + "_" + str(cat)] = [0,1]
+    if enable_tls:
+        for feature_type in tls_categorical_features.keys():
+            for cat in tls_categorical_features[feature_type]:
+                feature_list[feature_type + "_" + str(cat)] = [0,1]
+        feature_list.update([
+            ('TLS_record_length',[0,1<<14])]) # max TLS record length is 2^14 = 16384
     feature_list.update([
-        ('TLS_record_length',[0,1<<14]), # max TLS record length is 2^14 = 16384
         ('UDP_length',[0,1<<16]),
         ('ICMP_type',[0,1<<8]),
         ('ICMP_code',[0,1<<8])]
     )
     return feature_list
 
-def get_feature_names(flatten):
+def get_feature_names(flatten,enable_tls=False):
     if flatten == True:
-        features_names_list = get_feature_list_flatten().keys()
+        features_names_list = get_feature_list_flatten(enable_tls).keys()
     else:
-        features_names_list = get_feature_list_array().keys()
+        features_names_list = get_feature_list_array(enable_tls).keys()
     return list(features_names_list)
 
 # Bag of Words encoding for categorical features
@@ -201,11 +205,11 @@ def all_same(items):
     return all(x == items[0] for x in items)
 
 # min/max values of features based on the nominal min/max values of the single features (as defined in the feature_list dict)
-def static_min_max(flatten, time_window=10,max_flow_len=10):
+def static_min_max(flatten, time_window=10,max_flow_len=10,enable_tls=False):
     if flatten == True:
-        feature_list = get_feature_list_flatten(time_window,max_flow_len)
+        feature_list = get_feature_list_flatten(time_window,max_flow_len,enable_tls)
     else:
-        feature_list = get_feature_list_array(time_window,max_flow_len)
+        feature_list = get_feature_list_array(time_window,max_flow_len,enable_tls)
 
     min_array = np.zeros(len(feature_list))
     max_array = np.zeros(len(feature_list))
@@ -220,16 +224,15 @@ def static_min_max(flatten, time_window=10,max_flow_len=10):
 
 # min/max values of features based on the values in the dataset
 def find_min_max(X):
-    sample_len = X[0].shape[0]
-    max_array = np.zeros((1,sample_len))
-    min_array = np.full((1, sample_len),np.inf)
+    stacked_X = np.vstack(X)
+    sample_len = stacked_X.shape[-1]
+    max_array = np.zeros(sample_len)
+    min_array = np.zeros(sample_len)
 
-    for feature in X:
-        temp_feature = np.vstack([max_array,feature])
-        max_array = np.amax(temp_feature,axis=0)
-        temp_feature = np.vstack([min_array, feature])
-        min_array = np.amin(temp_feature, axis=0)
-
+    for i in range(stacked_X.shape[-1]): # iterate over the columns (features)
+        feature = stacked_X[:,i]
+        max_array[i] = np.amax(feature)
+        min_array[i] = np.amin(feature)
     return min_array,max_array
 
 def normalize_and_padding(X,mins,maxs,max_flow_len,padding=True):
@@ -263,7 +266,7 @@ def padding(X,max_flow_len):
         padded_X.append(padded_sample)
     return padded_X
 
-def flatten_samples(X):
+def flatten_samples(X,enable_tls=False):
     X_new = []
     protocols_len = len(categorical_features['protocols'])
     tls_cat_fields_count =  sum(len(v) for v in tls_categorical_features.values()) 
@@ -298,12 +301,13 @@ def flatten_samples(X):
         tcp_win_size = np.mean(sample[:,f_index])
         new_sample.append(tcp_win_size)
         f_index += 1
-        tls_cat_fields = list(np.sum(sample[:,f_index:f_index+tls_cat_fields_count],axis=0)) # we take the sum of each field
-        new_sample = new_sample + tls_cat_fields
-        f_index += tls_cat_fields_count
-        tls_record_len = np.mean(sample[:,f_index])
-        new_sample.append(tls_record_len)
-        f_index += 1
+        if enable_tls:
+            tls_cat_fields = list(np.sum(sample[:,f_index:f_index+tls_cat_fields_count],axis=0)) # we take the sum of each field
+            new_sample = new_sample + tls_cat_fields
+            f_index += tls_cat_fields_count
+            tls_record_len = np.mean(sample[:,f_index])
+            new_sample.append(tls_record_len)
+            f_index += 1
         udp_len = np.mean(sample[:,f_index])
         new_sample.append(udp_len)
         f_index += 1
