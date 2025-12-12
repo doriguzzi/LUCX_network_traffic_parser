@@ -286,30 +286,48 @@ def process_pcap(pcap_file,bin_labels,mc_labels, max_flow_len,labelled_flows,max
     print('Completed file {} in {} seconds.'.format(pcap_name, time.time() - start_time))
 
 # Transforms live traffic into input samples for inference
-def process_live_traffic(cap, dataset_type, in_labels, max_flow_len, traffic_type='all',time_window=TIME_WINDOW):
+def process_live_traffic(cap, bin_labels,mc_labels, max_flow_len, tls_features = False,  traffic_type='all',time_window=TIME_WINDOW, parser='pyshark'):
     start_time = time.time()
     temp_dict = OrderedDict()
     labelled_flows = []
 
+    # Label assigned to malicious live traffic (binary classification only)
+    traffic_label = 'malicious'  
+
     start_time_window = start_time
     time_window = start_time_window + time_window
+
+    # Precompute one-hot encodings for categorical features
+    protocol_lookup = precompute_encodings(categorical_features)
+    tls_lookup = precompute_encodings(tls_categorical_features)
+    encoding_lookup = protocol_lookup | tls_lookup
+
+    # Precompute TLS fields count
+    if tls_features == False:   
+        tls_fields_count = 0    
+    else:   
+        tls_fields_count =  sum(len(v) for v in tls_categorical_features.values()) + 1  # +1 for record length
+
+    if parser != 'pyshark':
+        print("Unsupported parser:", parser)
+        return
 
     if isinstance(cap, pyshark.LiveCapture) == True:
         for pkt in cap.sniff_continuously():
             if time.time() >= time_window:
                 break
-            pf = parse_packet(pkt)
+            pf = parse_packet(pkt,encoding_lookup,tls_fields_count,parser)
             temp_dict = store_packet(pf, temp_dict, start_time_window, max_flow_len)
     elif isinstance(cap, pyshark.FileCapture) == True:
         while time.time() < time_window:
             try:
                 pkt = cap.next()
-                pf = parse_packet(pkt)
+                pf = parse_packet(pkt,encoding_lookup,tls_fields_count,parser)
                 temp_dict = store_packet(pf,temp_dict,start_time_window,max_flow_len)
             except:
                 break
 
-    apply_labels(temp_dict,labelled_flows, in_labels,traffic_type)
+    apply_labels(temp_dict,labelled_flows, bin_labels, mc_labels, traffic_label, traffic_type)
     return labelled_flows
 
 def store_packet(pf,temp_dict,start_time_window, max_flow_len):
