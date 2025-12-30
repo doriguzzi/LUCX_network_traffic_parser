@@ -35,7 +35,7 @@ from util_functions import *
 
 # Sample commands
 # split a pcap file into smaller chunks to leverage multi-core CPUs: tcpdump -r dataset.pcap -w dataset-chunk -C 1000
-# dataset parsing (first step): python3 lucx_network_traffic_parser.py --dataset_type SYN2020 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --dataset_id SYN2020 --traffic_type all --time_window 10
+# dataset parsing (first step): python3 lucx_network_traffic_parser.py --dataset_type DOS2019 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --dataset_id DOS2019 --traffic_type all --time_window 10
 # dataset parsing (second step): python3 lucx_network_traffic_parser.py --preprocess_folder ./sample-dataset/
 
 
@@ -45,26 +45,22 @@ IDS2018_DDOS_FLOWS = {'attackers': ['18.218.115.60', '18.219.9.1','18.219.32.43'
 IDS2017_DDOS_FLOWS = {'attackers': ['172.16.0.1'],
                       'victims': ['192.168.10.50']}
 
-CUSTOM_DDOS_SYN = {'attackers': ['11.0.0.' + str(x) for x in range(1,255)],
-                      'victims': ['10.42.0.2']}
-
-CUSTOM_DDOS_SYN_CLASSES = ['benign','syn']
-
 DOS2019_FLOWS = {'attackers': ['172.16.0.5'], 'victims': ['192.168.50.1', '192.168.50.4']}
 
-#DOS2019_CLASSES = {'benign': 0, 'webddos': 1, 'ldap': 2, 'portmap': 3, 'dns': 4, 'udplag': 5, 'ntp': 6, 'snmp': 7, 'ssdp': 8, 'syn': 9, 'tftp': 10, 'udp': 11, 'netbios': 12, 'mssql': 13}
-#DOS2019_CLASSES = ['benign', 'dns', 'syn','udplag','webddos'] 
-DOS2019_CLASSES = ['benign', 'dns', 'ldap', 'mssql', 'netbios', 'ntp', 'portmap', 'snmp', 'ssdp', 'syn', 'tftp', 'udp', 'udplag', 'webddos'] #IMPORTANT: alphabetical order
+BINARY_CLASSES = ['benign','ddos']
+
+DOS2019_CLASSES = ['benign', 'dns', 'syn','udplag','webddos'] 
+#DOS2019_CLASSES = ['benign', 'dns', 'ldap', 'mssql', 'netbios', 'ntp', 'portmap', 'snmp', 'ssdp', 'syn', 'tftp', 'udp', 'udplag', 'webddos'] #IMPORTANT: alphabetical order
 
 DDOS_ATTACK_SPECS = {
     'DOS2017' : IDS2017_DDOS_FLOWS,
     'DOS2018' : IDS2018_DDOS_FLOWS,
-    'SYN2020' : CUSTOM_DDOS_SYN,
-    'DOS2019': DOS2019_FLOWS
+    'DOS2019': DOS2019_FLOWS,
+    'BINARY': DOS2019_FLOWS # for binary classification set the correct DDoS labels
 }
 
 DDOS_ATTACK_CLASSES = {
-    'SYN2020' : CUSTOM_DDOS_SYN_CLASSES,
+    'BINARY' : BINARY_CLASSES,
     'DOS2019': DOS2019_CLASSES
 }
 
@@ -162,33 +158,37 @@ def pyshark_packet_features(pkt,encoding_lookup,tls_fields_count):
         # ignore packets that aren't TCP/UDP or IPv4
         return None   
     
-def multiclass_labels(dataset_type):
+def multiclass_labels(labels='BINARY'):
     one_hot_labels = {}
 
-    if dataset_type is not None and dataset_type in DDOS_ATTACK_CLASSES:
-        DDOS_CLASSES = DDOS_ATTACK_CLASSES[dataset_type]
+    if labels is not None and labels in DDOS_ATTACK_CLASSES:
+        DDOS_CLASSES = DDOS_ATTACK_CLASSES[labels]
     else:
         return None 
+    
+    if len(DDOS_CLASSES) == 2:  # binary classification
+        one_hot_labels[DDOS_CLASSES[0]] = 0  # benign
+        one_hot_labels[DDOS_CLASSES[1]] = 1  # ddos
+    else:  # multiclass classification
+        label_encoder = LabelEncoder()
+        integer_encoded = label_encoder.fit_transform(DDOS_CLASSES)
 
-    label_encoder = LabelEncoder()
-    integer_encoded = label_encoder.fit_transform(DDOS_CLASSES)
 
+        # Reshape the integer encoded labels to a 2D array
+        integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
 
-    # Reshape the integer encoded labels to a 2D array
-    integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
+        # One-hot encode the integer encoded labels
+        onehot_encoder = OneHotEncoder(sparse_output=False)
+        onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
 
-    # One-hot encode the integer encoded labels
-    onehot_encoder = OneHotEncoder(sparse_output=False)
-    onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
+        # Print the original class labels
+        #print("Original class labels:", DDOS_CLASSES)
 
-    # Print the original class labels
-    #print("Original class labels:", DDOS_CLASSES)
-
-    # Print the one-hot encoded representation
-    #print("One-hot encoded representation:")
-    for i in range(len(DDOS_CLASSES)):
-        one_hot_labels[DDOS_CLASSES[i]] = onehot_encoded[i]
-        #print(DDOS_CLASSES[i], "->", onehot_encoded[i])
+        # Print the one-hot encoded representation
+        #print("One-hot encoded representation:")
+        for i in range(len(DDOS_CLASSES)):
+            one_hot_labels[DDOS_CLASSES[i]] = onehot_encoded[i]
+            #print(DDOS_CLASSES[i], "->", onehot_encoded[i])
 
     return one_hot_labels
 
@@ -292,7 +292,7 @@ def process_live_traffic(cap, bin_labels,mc_labels, max_flow_len, tls_features =
     labelled_flows = []
 
     # Label assigned to malicious live traffic (binary classification only)
-    traffic_label = 'malicious'  
+    traffic_label = BINARY_CLASSES[1]  
 
     start_time_window = start_time
     time_window = start_time_window + time_window
@@ -399,7 +399,6 @@ def balance_dataset(flows,mc_labels,samples_per_class=float('inf')):
     min_fragments = np.min(fragment_nonzero_values) #min(fragment_counters.values())
     samples_per_class = min(min_fragments,samples_per_class)
 
-    random.shuffle(flows)
     for flow in flows:
         if new_fragment_counters[flow[1]['label_string']] < samples_per_class:
             new_fragment_counters[flow[1]['label_string']] += len(flow[1]) - 2
@@ -489,12 +488,10 @@ def main(argv):
                         help='Maximum number of packets in a sample')
     parser.add_argument('-s', '--samples', default=float('inf'), type=int,
                         help='Number of training samples in the reduced output')
-    parser.add_argument('-i', '--dataset_id', nargs='?', type=str, default='',
-                        help='String to append to the names of output files')
     parser.add_argument('-m', '--max_flows', default=0, type=int,
                         help='Max number of flows to extract from the pcap files')
-    parser.add_argument('-l', '--label', default=1, type=int,
-                        help='Label assigned to the DDoS class')
+    parser.add_argument('-c', '--classes', default='BINARY', type=str,
+                        help='Names assigned to the traffic classes (e.g., BINARY, DOS2019)')
 
     
 
@@ -527,8 +524,8 @@ def main(argv):
         else:
             output_folder = args.dataset_folder[0]
 
-        in_labels = parse_labels(dataset_type,args.dataset_folder[0],label=args.label)
-        mc_labels = multiclass_labels(dataset_type)
+        in_labels = parse_labels(dataset_type,args.dataset_folder[0])
+        mc_labels = multiclass_labels(args.classes)
         filelist = glob.glob(args.dataset_folder[0]+ '/*.pcap')
 
         start_time = time.time()
@@ -560,10 +557,7 @@ def main(argv):
 
         process_time = time.time()-start_time
 
-        if args.dataset_id == '':
-            dataset_id = str(args.dataset_type)
-        else:
-            dataset_id = str(args.dataset_id) 
+        dataset_id = str(args.dataset_type)
 
         filename = str(int(time_window)) + 't-' + str(max_flow_len) + 'n-' + dataset_id + '-preprocess'
         output_file = output_folder + '/' + filename
@@ -610,12 +604,12 @@ def main(argv):
             current_max_flow_len = int(filename.split('-')[1].strip().replace('n',''))
             current_dataset_id = str(filename.split('-')[2].strip())
             if time_window != None and current_time_window != time_window:
-                print ("Incosistent time windows!!")
+                print ("Inconsistent time windows!!")
                 exit()
             else:
                 time_window = current_time_window
             if max_flow_len != None and current_max_flow_len != max_flow_len:
-                print ("Incosistent flow lengths!!")
+                print ("Inconsistent flow lengths!!")
                 exit()
             else:
                 max_flow_len = current_max_flow_len
@@ -642,10 +636,12 @@ def main(argv):
             labels = multiclass_labels(dataset_id)
         elif args.multiclass == 2:
             preprocessed_flows, labels = mc_to_int_labels(preprocessed_flows)
+        
+        # Full version of the dataset (no train/test/val split and no shuffling)
+        X_full, y_full, _ = dataset_to_list_of_fragments(preprocessed_flows)
 
         preprocessed_flows, fragment_counters = balance_dataset(preprocessed_flows,labels,args.samples)
         total_flows,total_samples,_,_ = count_flows(preprocessed_flows, labels)
-        
 
         if total_flows == 0:
             print("Empty dataset!")
@@ -660,14 +656,13 @@ def main(argv):
 
         # obtain 1D samples
         if args.flatten == True:
+            X_full = flatten_samples(X_full,args.enable_tls)
             X_train = flatten_samples(X_train,args.enable_tls)
             X_val = flatten_samples(X_val,args.enable_tls)
             X_test = flatten_samples(X_test,args.enable_tls)
 
-        X_full = X_train + X_val + X_test
-
-        #mins,maxs = static_min_max(args.flatten,time_window=time_window,max_flow_len=max_flow_len, enable_tls=args.enable_tls) # static mins and maxs
-        mins,maxs = find_min_max(X_full) # mins and maxs computed from the dataset
+        mins,maxs = static_min_max(args.flatten,time_window=time_window,max_flow_len=max_flow_len, enable_tls=args.enable_tls) 
+        # mins,maxs = find_min_max(X_full) # mins and maxs computed from the dataset
 
         output_file = output_folder + '/' + str(time_window) + 't-' + str(max_flow_len) + 'n-' + dataset_id + '-dataset'
         
@@ -675,10 +670,12 @@ def main(argv):
             norm_X_train = normalize(X_train,mins,maxs) if args.dont_normalize == False else X_train
             norm_X_val = normalize(X_val, mins, maxs) if args.dont_normalize == False else X_val
             norm_X_test = normalize(X_test, mins, maxs) if args.dont_normalize == False else X_test
+            norm_X_full = normalize(X_full, mins, maxs) if args.dont_normalize == False else X_full
         else:
             norm_X_train = normalize_and_padding(X_train,mins,maxs,max_flow_len) if args.dont_normalize == False else padding(X_train,max_flow_len)
             norm_X_val = normalize_and_padding(X_val, mins, maxs,max_flow_len) if args.dont_normalize == False else padding(X_val,max_flow_len)
             norm_X_test = normalize_and_padding(X_test, mins, maxs,max_flow_len) if args.dont_normalize == False else padding(X_test,max_flow_len)
+            norm_X_full = normalize_and_padding(X_full, mins, maxs,max_flow_len) if args.dont_normalize == False else padding(X_full,max_flow_len)
 
         norm_X_train_np = np.array(norm_X_train)
         y_train_np = np.array(y_train)
@@ -686,6 +683,14 @@ def main(argv):
         y_val_np = np.array(y_val)
         norm_X_test_np = np.array(norm_X_test)
         y_test_np = np.array(y_test)
+
+        norm_X_full_np = np.array(norm_X_full)
+        y_full_np = np.array(y_full)
+
+        hf = h5py.File(output_file + '-full.hdf5', 'w')
+        hf.create_dataset('set_x', data=norm_X_full_np)
+        hf.create_dataset('set_y', data=y_full_np)
+        hf.close()
 
         hf = h5py.File(output_file + '-train.hdf5', 'w')
         hf.create_dataset('set_x', data=norm_X_train_np)
