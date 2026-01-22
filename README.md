@@ -135,11 +135,12 @@ The following parameters can be specified when using ```lucx_network_traffic_par
 - ```-s```, ```--samples ```: Number of training samples in the reduced output
 - ```-t```, ```--dataset_type ```: Type of the dataset. Available options are: DOS2017, DOS2018, DOS2019
 - ```-w```, ```--time_window ```: Length of the time window in seconds (default: 10 seconds)
+- ```--binary ```: Binary labels (default: False)
 - ```--preprocess_file ```: Path to an intermediate file ```*.data```
 - ```--dont_normalize ```: Skip feature normalisation (default: False)
 - ```--flatten ```: Flatten the array-like intermediate flow representations into vectors (default: False)
 - ```--enable_tls ```: Enables the extraction of TLS-specific features (default: False)
-- ```--multiclass ```: Enables multiclass labels, either using integer numbers or one-hot encoding (0=binary (default), 1=one-hot encoding multiclass, 2=integer multiclass)	
+- ```--multiclass ```: Enables multiclass labels, either using integer numbers or one-hot encoding (0=binary (default), 1=integer multiclass, 2=one-hot encoding multiclass)	
 
 
 
@@ -150,40 +151,41 @@ In the first step, LUCX extracts the features from the packets of all the ```pca
 This first step can be executed with command:
 
 ```
-python3 lucx_network_traffic_parser.py --dataset_type DOS2019 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --classes DOS2019 --traffic_type all --time_window 10
+python3 lucx_network_traffic_parser.py --dataset_type DOS2019 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --traffic_type all --time_window 10
 ```
 
 This will process in parallel the `pcap` files, producing a file named ```10t-10n-DOS2019-preprocess.data```. In general, the script loads all the files with extension ```.pcap``` contained in the folder indicated with option ```--dataset_folder```. The files are processed in parallel to minimise the execution time.
 
 Prefix ```10t-10n``` means that the pre-processing has been done using a time window of 10 seconds (10t) and a flow length of 10 packets (10n). Please note that ```DOS2019``` in the filename is the result of option ```--dataset_type DOS2019``` in the command.
 
-The option `--dataset_type DOS2019` instructs the script to use the dictionary `DOS2019_FLOWS` to label the flows, while the option `--classes DOS2019` specifies which class should be assigned to each flow. In this example, the classes defined in the list `DOS2019_CLASSES` will be used.
+The option `--dataset_type DOS2019` instructs the script to use the dictionary `DOS2019_FLOWS` to label the flows. In this first phase, the labels are saved in one-hot-encoding format and can be converted into either binary or integer labels in the second step.
 
-Two types of class sets are currently defined at the top of the parser script: `BINARY` and `DOS2019_CLASSES`. The script logic is straightforward: it uses the `dataset_type` option to determine whether a flow is benign or malicious, and the `classes` option to assign the appropriate class label.
+The script logic is straightforward: it uses the `dataset_type` option to determine whether a flow is benign or malicious and to assign the appropriate class label.
 
-- If a flow is **benign**, its class is always set to `benign`, regardless of the `classes` option.
-- If a flow is **malicious**, its class is:
-  - `ddos` when `BINARY` is selected, or
-  - one of the classes in the `DOS2019_CLASSES` list when `DOS2019` is selected.
+- If a flow is **benign**, its class is always set to `benign`.
+- If a flow is **malicious**, its class is one of the classes in the `DOS2019_CLASSES` list when ``--dataset_type DOS2019` is selected.
 
-In the latter case, the assigned class is derived from the first part of the `pcap` filename.  
-For example, malicious flows in `udplag-chunk.pcap` will be labeled:
-- `udplag` when `--classes DOS2019` is used  
-- `ddos` when `--classes BINARY` is used
+The assigned class is derived from the first part of the `pcap` filename.  
+For example, malicious flows in `udplag-chunk.pcap` will be labeled with the one-hot encoded label for `udplag` i.e., `[0,0,0,0,0,0,0,0,0,0,0,0,1,0]`
 
 ### Second step
 
-The second step loads the ```*.data``` files, merges them into a single data structure stored in RAM memory, balances the dataset so that number of benign and DDoS samples are approximately the same, splits the data structure into training, validation and test sets, normalises the features between 0 and 1 and executes the padding of samples with zeros so that they all have the same shape (since having samples of fixed shape is a requirement for a CNN to be able to learn over a full sample set).
+The second step loads the ```*.data``` files, merges them into a single data structure stored in RAM memory, assigned the appropriate labels to the samples, balances the dataset so that number of benign and DDoS samples are approximately the same, splits the data structure into training, validation and test sets, normalises the features between 0 and 1. 
+In the case of packet-level features, it also executes the padding of the array-like samples with zeros so that they all have the same shape.
 
-Finally, three files (training, validation and test sets) are saved in *hierarchical data format* ```hdf5``` . 
+Finally, three files (training, validation and test sets) are saved in *hierarchical data format* ```hdf5```. 
 
 The second step is executed with command:
 
 ```
-python3 lucx_network_traffic_parser.py --preprocess_folder ./sample-dataset/ --flatten
+python3 lucx_network_traffic_parser.py --preprocess_folder ./sample-dataset/ --multiclass 1 --binary --flatten
 ```
 
 If option ```--output_folder``` is not used, the output will be produced in the input folder specified with option ```--preprocess_folder```.
+
+Option ```multiclass``` indicates whether the initial one-hot labels saved in the `*.data` file should be converted into binary (0), integer (1) or one-hot (2). In the latter case, no changes will be applied to the labels.
+
+Option `--binary` indicates whether the labels should be converted into binary labels. When combined with option `--multiclass 1` (integer labels) the labels (e.g., from 0 to 13 in the case of the `DOS2019` dataset type) will be converted to 0 for `benign` and 1 for `ddos`. Instead, one-hot labels (`--multiclass 2`) will be converted into 2-dimensional one-hot labels: `[1,0]` for benign, `[0,1]` for the ddos class.
 
 The option ```--flatten``` is optional and is used to obtain traffic flows representations based on `statistical features`. When not used, `packet-level` representations are produced. 
 

@@ -1,4 +1,4 @@
-# Copyright (c) 2025 @ FBK - Fondazione Bruno Kessler
+# Copyright (c) 2026 @ FBK - Fondazione Bruno Kessler
 # Author: Roberto Doriguzzi-Corin
 # Project: LUCX: LUCID network traffic parser eXtended
 #
@@ -35,8 +35,8 @@ from util_functions import *
 
 # Sample commands
 # split a pcap file into smaller chunks to leverage multi-core CPUs: tcpdump -r dataset.pcap -w dataset-chunk -C 1000
-# dataset parsing (first step): python3 lucx_network_traffic_parser.py --dataset_type DOS2019 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --dataset_id DOS2019 --traffic_type all --time_window 10
-# dataset parsing (second step): python3 lucx_network_traffic_parser.py --preprocess_folder ./sample-dataset/
+# dataset parsing (first step): python3 lucx_network_traffic_parser.py --dataset_type DOS2019 --dataset_folder ./sample-dataset/ --packets_per_flow 10 --traffic_type all --time_window 10
+# dataset parsing (second step): python3 lucx_network_traffic_parser.py --preprocess_folder ./sample-dataset/ --multiclass 2 --binary --flatten
 
 
 IDS2018_DDOS_FLOWS = {'attackers': ['18.218.115.60', '18.219.9.1','18.219.32.43','18.218.55.126','52.14.136.135','18.219.5.43','18.216.200.189','18.218.229.235','18.218.11.51','18.216.24.42'],
@@ -49,18 +49,20 @@ DOS2019_FLOWS = {'attackers': ['172.16.0.5'], 'victims': ['192.168.50.1', '192.1
 
 BINARY_CLASSES = ['benign','ddos']
 
-DOS2019_CLASSES = ['benign', 'dns', 'syn','udplag','webddos'] 
-#DOS2019_CLASSES = ['benign', 'dns', 'ldap', 'mssql', 'netbios', 'ntp', 'portmap', 'snmp', 'ssdp', 'syn', 'tftp', 'udp', 'udplag', 'webddos'] #IMPORTANT: alphabetical order
+DOS2017_CLASSES = ['benign', 'loic'] 
+
+#DOS2019_CLASSES = ['benign', 'dns', 'syn','udplag','webddos'] 
+DOS2019_CLASSES = ['benign', 'dns', 'ldap', 'mssql', 'netbios', 'ntp', 'portmap', 'snmp', 'ssdp', 'syn', 'tftp', 'udp', 'udplag', 'webddos'] #IMPORTANT: alphabetical order
 
 DDOS_ATTACK_SPECS = {
     'DOS2017' : IDS2017_DDOS_FLOWS,
     'DOS2018' : IDS2018_DDOS_FLOWS,
-    'DOS2019': DOS2019_FLOWS,
-    'BINARY': DOS2019_FLOWS # for binary classification set the correct DDoS labels
+    'DOS2019': DOS2019_FLOWS
 }
 
 DDOS_ATTACK_CLASSES = {
     'BINARY' : BINARY_CLASSES,
+    'DOS2017': DOS2017_CLASSES,
     'DOS2019': DOS2019_CLASSES
 }
 
@@ -157,40 +159,6 @@ def pyshark_packet_features(pkt,encoding_lookup,tls_fields_count):
     except AttributeError as e:
         # ignore packets that aren't TCP/UDP or IPv4
         return None   
-    
-def multiclass_labels(labels='BINARY'):
-    one_hot_labels = {}
-
-    if labels is not None and labels in DDOS_ATTACK_CLASSES:
-        DDOS_CLASSES = DDOS_ATTACK_CLASSES[labels]
-    else:
-        return None 
-    
-    if len(DDOS_CLASSES) == 2:  # binary classification
-        one_hot_labels[DDOS_CLASSES[0]] = 0  # benign
-        one_hot_labels[DDOS_CLASSES[1]] = 1  # ddos
-    else:  # multiclass classification
-        label_encoder = LabelEncoder()
-        integer_encoded = label_encoder.fit_transform(DDOS_CLASSES)
-
-
-        # Reshape the integer encoded labels to a 2D array
-        integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
-
-        # One-hot encode the integer encoded labels
-        onehot_encoder = OneHotEncoder(sparse_output=False)
-        onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
-
-        # Print the original class labels
-        #print("Original class labels:", DDOS_CLASSES)
-
-        # Print the one-hot encoded representation
-        #print("One-hot encoded representation:")
-        for i in range(len(DDOS_CLASSES)):
-            one_hot_labels[DDOS_CLASSES[i]] = onehot_encoded[i]
-            #print(DDOS_CLASSES[i], "->", onehot_encoded[i])
-
-    return one_hot_labels
 
 def flag_to_int(value):
     mapping = {'0':0, 'False': 0, '1': 1, 'True': 1}
@@ -359,8 +327,8 @@ def apply_labels(flows, labelled_flows, bin_labels, mc_labels, traffic_label, tr
                 flow['label'] = mc_labels['benign']
                 flow['label_string'] = 'benign'
             else:
-                flow['label'] = mc_labels[traffic_label]
-                flow['label_string'] = traffic_label
+                flow['label'] = mc_labels.get(traffic_label,np.array([0.,1.]))  # assign the correct attack label]
+                flow['label_string'] = traffic_label if traffic_label in mc_labels.keys() else list(mc_labels)[1]
 
         for flow_key, packet_list in flow.items():
             # relative time wrt the time of the first packet in the flow
@@ -406,25 +374,72 @@ def balance_dataset(flows,mc_labels,samples_per_class=float('inf')):
 
     return new_flow_list, new_fragment_counters
 
-def mc_to_bin_labels(flows):
-    labels = {'benign': 0, 'attack': 1}
-    for flow in flows:
-        if flow[1]['label_string'] == 'benign':
-            flow[1]['label'] = labels['benign']
-        else:
-            flow[1]['label_string'] = 'attack'
-            flow[1]['label'] = labels['attack']
-    return flows, labels
-
-def mc_to_int_labels(flows):
+# this method sets the labels for binary and multiclass classification
+def set_labels(flows, multiclass, classes='BINARY'):
     labels = {}
-    for flow in flows:
-        flow[1]['label'] = DOS2019_CLASSES.index(flow[1]['label_string'])
 
-        retVal = labels.get(flow[1]['label_string'])
-        if retVal is None:
-            labels[flow[1]['label_string']] = DOS2019_CLASSES.index(flow[1]['label_string'])
-    return flows, labels
+    if multiclass == 0: # binary labels
+        labels = {'benign': 0, 'ddos': 1}
+        for flow in flows:
+            if flow[1]['label_string'] == 'benign':
+                flow[1]['label'] = 0
+            else:
+                flow[1]['label_string'] = 'ddos'
+                flow[1]['label'] = 1
+    elif multiclass == 1: # integer multiclass labels
+        traffic_classes = DDOS_ATTACK_CLASSES.get(classes, DDOS_ATTACK_CLASSES['BINARY'])
+        for traffic_class in traffic_classes:
+            labels[traffic_class] = traffic_classes.index(traffic_class)
+        for flow in flows:
+            if flow[1]['label_string'] == 'benign':
+                flow[1]['label'] = 0
+            else:
+                if classes == 'BINARY':
+                    flow[1]['label_string'] = 'ddos'
+                    flow[1]['label'] = 1
+                else:
+                    flow[1]['label'] = labels[flow[1]['label_string']]
+    elif multiclass == 2: # one-hot encoding multiclass labels
+        labels = multiclass_labels(classes)
+        if classes == 'BINARY': # from existing one hot encoding multiclass to binary one-hot encoding
+            for flow in flows:
+                if flow[1]['label_string'] == 'benign':
+                    flow[1]['label'] = np.array([1.,0.])
+                else:
+                    flow[1]['label_string'] = 'ddos'
+                    flow[1]['label'] = np.array([0.,1.])
+
+    return flows,labels
+
+def multiclass_labels(labels='BINARY'):
+    one_hot_labels = {}
+
+    if labels is not None and labels in DDOS_ATTACK_CLASSES:
+        DDOS_CLASSES = DDOS_ATTACK_CLASSES[labels]
+    else:
+        return None 
+
+    label_encoder = LabelEncoder()
+    integer_encoded = label_encoder.fit_transform(DDOS_CLASSES)
+
+
+    # Reshape the integer encoded labels to a 2D array
+    integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
+
+    # One-hot encode the integer encoded labels
+    onehot_encoder = OneHotEncoder(sparse_output=False)
+    onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
+
+    # Print the original class labels
+    #print("Original class labels:", DDOS_CLASSES)
+
+    # Print the one-hot encoded representation
+    #print("One-hot encoded representation:")
+    for i in range(len(DDOS_CLASSES)):
+        one_hot_labels[DDOS_CLASSES[i]] = onehot_encoded[i]
+        #print(DDOS_CLASSES[i], "->", onehot_encoded[i])
+
+    return one_hot_labels
 
 # convert the dataset from dictionaries with 5-tuples keys into a list of flow fragments and another list of labels
 def dataset_to_list_of_fragments(dataset):
@@ -464,8 +479,8 @@ def train_test_split(flow_list,mc_labels, train_size=TRAIN_SIZE, shuffle=True):
 def main(argv):
     command_options = " ".join(str(x) for x in argv[1:])
 
-    help_string = 'Usage[0]: python3 lucx_network_traffic_parser.py --dataset_type <dataset_name> --dataset_folder <folder path> --dataset_id <dataset identifier> --packets_per_flow <n> --time_window <t>\n' \
-                  'Usage[1]: python3 lucx_network_traffic_parser.py --preprocess_folder <folder path>'
+    help_string = 'Usage[0]: python3 lucx_network_traffic_parser.py --dataset_type <dataset_name> --dataset_folder <folder path>  --packets_per_flow <n> --time_window <t>\n' \
+                  'Usage[1]: python3 lucx_network_traffic_parser.py --preprocess_folder <folder path> --multiclass <0|1|2> [--flatten] [--binary]\n'
     manager = Manager()
 
     parser = argparse.ArgumentParser(
@@ -490,8 +505,6 @@ def main(argv):
                         help='Number of training samples in the reduced output')
     parser.add_argument('-m', '--max_flows', default=0, type=int,
                         help='Max number of flows to extract from the pcap files')
-    parser.add_argument('-c', '--classes', default='BINARY', type=str,
-                        help='Names assigned to the traffic classes (e.g., BINARY, DOS2019)')
 
     
 
@@ -501,11 +514,12 @@ def main(argv):
     parser.add_argument('--dont_normalize', help='Normalize the dataset', action='store_true')
     parser.add_argument('--flatten', help='Flatten the input arrays', action='store_true')
     parser.add_argument('-mc', '--multiclass', default=0, type=int,
-                        help='0=binary, 1=one-hot encoding multiclass, 2=integer multiclass')
+                        help='0=binary, 1=integer multiclass, 2=one-hot encoding multiclass')
     parser.add_argument('--parser', default='pyshark', nargs='?', type=str,
                         help='Pcap parser (scapy, pyshark)')
     
     parser.add_argument('--no_split', help='Do not split the dataset', action='store_true')
+    parser.add_argument('--binary', help='Binary labels', action='store_true')
     parser.add_argument('--enable_tls', help='Extract TLS features', action='store_true')
 
     args = parser.parse_args()
@@ -525,7 +539,7 @@ def main(argv):
             output_folder = args.dataset_folder[0]
 
         in_labels = parse_labels(dataset_type,args.dataset_folder[0])
-        mc_labels = multiclass_labels(args.classes)
+        mc_labels = multiclass_labels(dataset_type)
         filelist = glob.glob(args.dataset_folder[0]+ '/*.pcap')
 
         start_time = time.time()
@@ -614,8 +628,10 @@ def main(argv):
             else:
                 max_flow_len = current_max_flow_len
 
-            if dataset_id != None and current_dataset_id != dataset_id:
-                dataset_id = "IDS201X"
+            a = DDOS_ATTACK_CLASSES.keys()
+            if dataset_id != None and (dataset_id != current_dataset_id or dataset_id not in DDOS_ATTACK_CLASSES.keys()):
+                print ("Unrecognised dataset!!")
+                exit()
             else:
                 dataset_id = current_dataset_id
 
@@ -628,14 +644,9 @@ def main(argv):
                 preprocessed_flows = preprocessed_flows + pickle.load(filehandle)
 
 
-        # balance samples and redux the number of samples when requested
-        # transform a multiclass problem into a binary problem
-        if args.multiclass == 0:
-            preprocessed_flows, labels = mc_to_bin_labels(preprocessed_flows)
-        elif args.multiclass == 1:
-            labels = multiclass_labels(dataset_id)
-        elif args.multiclass == 2:
-            preprocessed_flows, labels = mc_to_int_labels(preprocessed_flows)
+        # transform a multiclass labels into binary or integer
+        # multiclass one-hot encoding does not require any transformation
+        preprocessed_flows, labels = set_labels(preprocessed_flows, args.multiclass, 'BINARY' if args.binary == True else dataset_id)
         
         # Full version of the dataset (no train/test/val split and no shuffling)
         X_full, y_full, _ = dataset_to_list_of_fragments(preprocessed_flows)
