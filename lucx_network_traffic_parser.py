@@ -50,6 +50,7 @@ DOS2019_FLOWS = {'attackers': ['172.16.0.5'], 'victims': ['192.168.50.1', '192.1
 BINARY_CLASSES = ['benign','ddos']
 
 DOS2017_CLASSES = ['benign', 'loic'] 
+DOS2018_CLASSES = ['benign', 'hoic'] 
 
 #DOS2019_CLASSES = ['benign', 'dns', 'syn','udplag','webddos'] 
 DOS2019_CLASSES = ['benign', 'dns', 'ldap', 'mssql', 'netbios', 'ntp', 'portmap', 'snmp', 'ssdp', 'syn', 'tftp', 'udp', 'udplag', 'webddos'] #IMPORTANT: alphabetical order
@@ -63,6 +64,7 @@ DDOS_ATTACK_SPECS = {
 DDOS_ATTACK_CLASSES = {
     'BINARY' : BINARY_CLASSES,
     'DOS2017': DOS2017_CLASSES,
+    'DOS2018': DOS2018_CLASSES,
     'DOS2019': DOS2019_CLASSES
 }
 
