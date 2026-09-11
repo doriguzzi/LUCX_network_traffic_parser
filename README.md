@@ -221,7 +221,7 @@ The notebook provides all the instructions required to execute each cell.
 
 If you are using LUCX's code for scientific research, please cite the related paper in your manuscript as follows:
 
-*R. Doriguzzi-Corin, S. Millar, S. Scott-Hayward, J. Martínez-del-Rincón and D. Siracusa, "Lucid: A Practical, Lightweight Deep Learning Solution for DDoS Attack Detection," in IEEE Transactions on Network and Service Management, vol. 17, no. 2, pp. 876-889, June 2020, doi: 10.1109/TNSM.2020.2971776.*
+*Doriguzzi-Corin, Roberto, Silvio Cretti, Petr Sabel and Silvio Ranise. "Federated Learning in the Wild: A Comparative Study for Cybersecurity under Non-IID and Unbalanced Settings." arXiv preprint arXiv:2509.17836 (2026).*
 
 ## License
 
